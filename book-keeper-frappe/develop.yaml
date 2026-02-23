@@ -50,6 +50,8 @@ services:
     volumes:
       - ./entrypoint-tigerbeetle.sh:/entrypoint-tigerbeetle.sh
       - tigerbeetle_data:/data
+    ports:
+      - 3000:3000
     networks:
       default:
         # Assign the static IP used in the 'app' environment variable

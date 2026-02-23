@@ -69,6 +69,7 @@ def make_request(method, endpoint, expected_status, payload=None, params=None):
 # --- Main Test Logic ---
 def main():
     log_info("Starting Book-Keeper API test script...")
+    run_id = uuid.uuid4().hex[:8]
 
     tested_features = [
         "Accounts",
@@ -78,21 +79,52 @@ def main():
         "Refill",
         "Correction",
         "Errors",
+        "Pending Compound Entries",
         "Pending Transfer Timeout",
     ]
+
+    # Define a mapping for unique account codes for this test run
+    account_codes = {
+        "cash": f"1001_{run_id}",
+        "revenue": f"4001_{run_id}",
+        "wallet1": f"Wallet-Cust001_{run_id}",
+        "wallet2": f"Wallet-Cust002_{run_id}",
+        "bank_suspense": f"Bank-Suspense_{run_id}",
+        "payables_ext": f"Payables-External_{run_id}",
+        "sof": f"Source-of-Funds_{run_id}",
+        "limiter_debit": f"sys_rate_limiter_debit_{run_id}",
+        "limiter_credit": f"sys_rate_limiter_credit_{run_id}",
+        "ctrl_compound": f"sys_ctrl_compound_{run_id}",
+    }
 
     # 1. Idempotently create required accounts
     accounts_payload = {
         "tenant_id": TENANT_ID,
         "accounts": [
-            {"code": "1001", "name": "Cash", "type": "asset"},
-            {"code": "4001", "name": "Sales Revenue", "type": "revenue"},
-            # NEW: Wallet accounts with string codes
-            {"code": "Wallet-Cust001", "name": "Customer 001 Wallet", "type": "liability", "max_balance": 200000},
-            {"code": "Wallet-Cust002", "name": "Customer 002 Wallet", "type": "liability", "max_balance": 200000},
+            {"code": account_codes["cash"], "name": "Cash", "type": "asset"},
+            {"code": account_codes["revenue"], "name": "Sales Revenue", "type": "revenue"},
+            {"code": account_codes["bank_suspense"], "name": "Bank Suspense", "type": "asset"},
+            {"code": account_codes["payables_ext"], "name": "External Payables", "type": "liability"},
+            {"code": account_codes["sof"], "name": "Source of Funds", "type": "liability"},
+            {
+                "code": account_codes["wallet1"],
+                "name": "Customer 001 Wallet",
+                "type": "liability",
+                "max_balance": 200000,
+                "currency": "USD",
+            },
+            {
+                "code": account_codes["wallet2"],
+                "name": "Customer 002 Wallet",
+                "type": "liability",
+                "max_balance": 200000,
+                "currency": "USD",
+            },
             # System accounts for rate limiting
-            {"code": "sys_rate_limiter_debit", "name": "Rate Limiter Debit", "type": "asset"},
-            {"code": "sys_rate_limiter_credit", "name": "Rate Limiter Credit", "type": "liability"},
+            {"code": account_codes["limiter_debit"], "name": "Rate Limiter Debit", "type": "asset"},
+            {"code": account_codes["limiter_credit"], "name": "Rate Limiter Credit", "type": "liability"},
+            # System account for compound transfers
+            {"code": account_codes["ctrl_compound"], "name": "Compound Transfer Control", "type": "liability"},
         ],
     }
     make_request("POST", "/accounts", 200, payload=accounts_payload)
@@ -105,8 +137,8 @@ def main():
         "idempotency_key": single_phase_id,
         "entry_date": "2024-01-01",
         "narration": "Standard single-phase sale",
-        "debit_legs": [{"account_code": "1001", "amount": 1000, "currency": "USD"}],
-        "credit_legs": [{"account_code": "4001", "amount": 1000, "currency": "USD"}],
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 1000, "currency": "USD"}],
+        "credit_legs": [{"account_code": account_codes["revenue"], "amount": 1000, "currency": "USD"}],
     }
     je_response = make_request("POST", "/journal-entries", 201, payload=single_phase_payload)
     journal_id_for_correction = je_response.json()["journal_id"]
@@ -119,8 +151,8 @@ def main():
         "idempotency_key": idempotency_key_commit,
         "entry_date": "2024-01-02",
         "narration": "Test sale to be committed",
-        "debit_legs": [{"account_code": "1001", "amount": 500, "currency": "USD"}],
-        "credit_legs": [{"account_code": "4001", "amount": 500, "currency": "USD"}],
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 500, "currency": "USD"}],
+        "credit_legs": [{"account_code": account_codes["revenue"], "amount": 500, "currency": "USD"}],
     }
     create_response = make_request("POST", "/pending-journal-entries", 202, payload=create_commit_payload)
     commit_journal_id = create_response.json()["journal_id"]
@@ -136,8 +168,8 @@ def main():
         "idempotency_key": idempotency_key_void,
         "entry_date": "2024-01-03",
         "narration": "Test sale to be voided",
-        "debit_legs": [{"account_code": "1001", "amount": 250, "currency": "USD"}],
-        "credit_legs": [{"account_code": "4001", "amount": 250, "currency": "USD"}],
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 250, "currency": "USD"}],
+        "credit_legs": [{"account_code": account_codes["revenue"], "amount": 250, "currency": "USD"}],
     }
     create_response_void = make_request("POST", "/pending-journal-entries", 202, payload=create_void_payload)
     void_journal_id = create_response_void.json()["journal_id"]
@@ -145,9 +177,48 @@ def main():
     void_payload = {"tenant_id": TENANT_ID}
     make_request("POST", f"/pending-journal-entries/{void_journal_id}/void", 200, payload=void_payload)
 
+    # 4a. Test: Create and Commit a Pending COMPOUND Entry
+    log_info("--- Running TWO-PHASE COMPOUND COMMIT Scenario ---")
+    create_compound_commit_payload = {
+        "tenant_id": TENANT_ID,
+        "narration": "Test compound sale to be committed",
+        "debit_legs": [{"account_code": account_codes["wallet1"], "amount": 150, "currency": "USD"}],
+        "credit_legs": [
+            {"account_code": account_codes["cash"], "amount": 100, "currency": "USD"},
+            {"account_code": account_codes["revenue"], "amount": 50, "currency": "USD"},
+        ],
+    }
+    create_compound_commit_response = make_request(
+        "POST", "/pending-compound-transfers", 202, payload=create_compound_commit_payload
+    )
+    compound_commit_journal_id = create_compound_commit_response.json()["journal_id"]
+    make_request(
+        "POST",
+        f"/pending-compound-transfers/{compound_commit_journal_id}/commit",
+        200,
+        payload={"tenant_id": TENANT_ID},
+    )
+
+    # 4b. Test: Create and Void a Pending COMPOUND Entry
+    log_info("--- Running TWO-PHASE COMPOUND VOID Scenario ---")
+    create_compound_void_payload = create_compound_commit_payload.copy()
+    create_compound_void_response = make_request(
+        "POST",
+        "/pending-compound-transfers",
+        202,
+        payload=create_compound_void_payload,
+    )
+    compound_void_journal_id = create_compound_void_response.json()["journal_id"]
+    make_request(
+        "POST", f"/pending-compound-transfers/{compound_void_journal_id}/void", 200, payload={"tenant_id": TENANT_ID}
+    )
+
     # 5. Test: Balance Queries
     log_info("--- Running BALANCE QUERY Scenario ---")
-    balance_params = f"?tenant_id={TENANT_ID}&account_codes=1001&account_codes=4001&account_codes=Wallet-Cust001"
+    balance_params = (
+        f"?tenant_id={TENANT_ID}&account_codes={account_codes['cash']}&"
+        f"account_codes={account_codes['revenue']}&account_codes={account_codes['wallet1']}"
+    )
     balance_response = make_request("GET", f"/accounts/balances{balance_params}", 200)
     balances = balance_response.json()
     log_info(f"Retrieved {len(balances)} account balances")
@@ -156,8 +227,8 @@ def main():
     log_info("--- Running REFILL RATE LIMITER Scenario ---")
     refill_payload = {
         "tenant_id": TENANT_ID,
-        "source_of_funds_account_code": "sys_rate_limiter_credit",
-        "accounts_to_refill": [{"account_code": "sys_rate_limiter_debit", "amount": 10000, "currency": "USD"}],
+        "source_of_funds_account_code": account_codes["limiter_credit"],
+        "accounts_to_refill": [{"account_code": account_codes["limiter_debit"], "amount": 10000, "currency": "USD"}],
     }
     make_request("POST", "/admin/limiter-accounts/refill", 204, payload=refill_payload)
 
@@ -168,6 +239,36 @@ def main():
     )
     reversal_id = correction_response.json()["reversal_journal_id"]
     log_info(f"Created reversal journal entry: {reversal_id}")
+
+    # 7b. Test: Compound Journal Entry Reversal (Admin)
+    log_info("--- Running COMPOUND CORRECTION ENTRY Scenario ---")
+
+    # First, create a standard compound journal entry (Multiple credits)
+    compound_je_id = str(uuid.uuid4())
+    compound_payload = {
+        "tenant_id": TENANT_ID,
+        "idempotency_key": compound_je_id,
+        "entry_date": "2024-01-06",
+        "narration": "Compound sale for correction",
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 200, "currency": "USD"}],
+        "credit_legs": [
+            {"account_code": account_codes["revenue"], "amount": 150, "currency": "USD"},
+            {"account_code": account_codes["wallet1"], "amount": 50, "currency": "USD"},
+        ],
+    }
+
+    # POST the compound entry
+    comp_resp = make_request("POST", "/journal-entries", 201, payload=compound_payload)
+    journal_id_to_reverse = comp_resp.json()["journal_id"]
+
+    # Trigger the correction (reversal)
+    correction_params = f"?tenant_id={TENANT_ID}"
+    comp_correction_resp = make_request(
+        "POST", f"/admin/journal-entries/{journal_id_to_reverse}/correct{correction_params}", 200
+    )
+
+    reversal_id = comp_correction_resp.json()["reversal_journal_id"]
+    log_success(f"Successfully reversed compound entry {journal_id_to_reverse} with reversal ID: {reversal_id}")
 
     # 8. Test: Reporting (Optional - depends on projector and TEST_REPORTS env var)
     if os.getenv("TEST_REPORTS", "false").lower() in ("true", "1", "yes"):
@@ -193,10 +294,10 @@ def main():
         "idempotency_key": str(uuid.uuid4()),
         "entry_date": "2024-01-04",
         "narration": "Unbalanced entry test",
-        "debit_legs": [{"account_code": "1001", "amount": 100, "currency": "USD"}],
-        "credit_legs": [{"account_code": "4001", "amount": 50, "currency": "USD"}],
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 100, "currency": "USD"}],
+        "credit_legs": [{"account_code": account_codes["revenue"], "amount": 50, "currency": "USD"}],
     }
-    make_request("POST", "/journal-entries", 400, payload=unbalanced_payload)
+    make_request("POST", "/journal-entries", 422, payload=unbalanced_payload)
     log_info("Correctly rejected unbalanced entry")
 
     # 11. Test: Pending Transfer Timeout
@@ -207,8 +308,8 @@ def main():
         "idempotency_key": str(uuid.uuid4()),
         "entry_date": "2024-01-05",
         "narration": "Timeout test entry",
-        "debit_legs": [{"account_code": "1001", "amount": 100, "currency": "USD"}],
-        "credit_legs": [{"account_code": "4001", "amount": 100, "currency": "USD"}],
+        "debit_legs": [{"account_code": account_codes["cash"], "amount": 100, "currency": "USD"}],
+        "credit_legs": [{"account_code": account_codes["revenue"], "amount": 100, "currency": "USD"}],
         "timeout_seconds": 2,
     }
     timeout_response = make_request("POST", "/pending-journal-entries", 202, payload=timeout_payload)
@@ -222,23 +323,10 @@ def main():
     time.sleep(5)
 
     # Attempt to commit - should fail
-    log_info(f"Attempting to commit expired entry: {timeout_journal_id} (Expecting 400 or 500)...")
-    # Note: The exact error code might depend on how the exception is handled by the API layer.
-    # We expect it to fail, so we'll accept 400 or 500.
-    try:
-        # We expect a 400 if the API explicitly checks for timeout and returns a specific error.
-        # If the API tries to process it and hits a storage error due to the expired state, it might return 500.
-        # To handle both, we'll try to commit expecting 400, and if that fails, we'll catch the log_error exit.
-        make_request(
-            "POST", f"/pending-journal-entries/{timeout_journal_id}/commit", 400, payload={"tenant_id": TENANT_ID}
-        )
-        log_info("Correctly rejected expired pending entry with 400 status.")
-    except SystemExit:
-        # make_request calls sys.exit(1) on unexpected status.
-        # If the API returns 500, make_request will exit. We catch that here.
-        log_info("Request failed with an unexpected status (e.g., 500) as expected for an expired entry.")
-    except Exception as e:
-        log_info(f"An unexpected error occurred during commit attempt: {e}")
+    log_info(f"Attempting to commit expired entry: {timeout_journal_id} (Expecting 500)...")
+
+    make_request("POST", f"/pending-journal-entries/{timeout_journal_id}/commit", 500, payload={"tenant_id": TENANT_ID})
+    log_info("Correctly rejected expired pending entry with 500 status.")
 
     log_info("--- All Scenarios Completed ---")
 
