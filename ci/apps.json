@@ -1,10 +1,14 @@
 [
   {
     "url": "https://github.com/frappe/erpnext.git",
-    "branch": "v14.14.0"
+    "branch": "v15.63.0"
   },
   {
-    "url": "https://github.com/resilient-tech/india-compliance.git",
-    "branch": "v14.1.2"
-  }
+    "url": "https://github.com/frappe/payments.git",
+    "branch": "version-15"
+  },
+  {
+    "url": "https://github.com/lmnaslimited/lens_pdf-on-submit.git",
+    "branch": "workflow-v2"
+  }  
 ]
