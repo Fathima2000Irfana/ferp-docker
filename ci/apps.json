@@ -10,5 +10,9 @@
   {
     "url": "https://github.com/The-Commit-Company/raven",
     "branch": "v2.8.0"
-  }  
+  },
+  {
+    "url": "https://github.com/lmnaslimited/lensips.git",
+    "branch": "develop"
+  }
 ]
