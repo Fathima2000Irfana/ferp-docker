@@ -82,7 +82,7 @@ jobs:
       - name: Build and Push Image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: builds
           file: builds/images/custom/Containerfile
           push: true
           tags: |
