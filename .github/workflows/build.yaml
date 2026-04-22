@@ -53,6 +53,19 @@ jobs:
           echo "VERSION=$(cat ./ci/version.txt)" >> $GITHUB_ENV
           echo "APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)" >> $GITHUB_ENV
 
+      - name: Checkout frappe_docker
+        uses: actions/checkout@v4
+        with:
+          repository: lmnaslimited/frappe_docker
+          ref: container-versionv15.69.1
+          path: builds
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          df -h
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -70,11 +83,10 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ${{ inputs.dockerfile || env.DOCKERFILE }}
+          file: builds/images/custom/Containerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository }}/${{ inputs.image || env.IMAGE }}:${{ inputs.version || env.VERSION }}
-            ghcr.io/${{ github.repository }}/${{ inputs.image || env.IMAGE }}:latest
           build-args: |
             FRAPPE_PATH=${{ inputs.frappe-repo || env.FRAPPE_REPO }}
             FRAPPE_BRANCH=${{ inputs.frappe-version || env.FRAPPE_VERSION }}
